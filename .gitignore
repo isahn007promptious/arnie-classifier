@@ -1,0 +1,7 @@
+venv_win/
+.venv_arnie/
+__pycache__/
+inputs/
+hard_cases/
+backup_working/
+*.pyc
