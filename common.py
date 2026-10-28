@@ -1,19 +1,38 @@
 import cv2
 import numpy as np
 from PIL import Image
+import os
+
+# Cache loaded cascades
+_CASCADE_CACHE = {}
+
+def _load_cascade(filename):
+    """Load Haar cascade from project folder first, then cv2.data fallback."""
+    if filename in _CASCADE_CACHE:
+        return _CASCADE_CACHE[filename]
+
+    # Try project folder first
+    project_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cascades", filename)
+    cascade = cv2.CascadeClassifier(project_path)
+
+    if cascade.empty():
+        # Fallback to cv2.data
+        fallback_path = os.path.join(cv2.data.haarcascades, filename)
+        cascade = cv2.CascadeClassifier(fallback_path)
+
+        if cascade.empty():
+            raise RuntimeError(f"Failed to load cascade from {project_path} and {fallback_path}")
+
+    _CASCADE_CACHE[filename] = cascade
+    return cascade
 
 def detect_faces(pil_image):
     """
     Detect candidate face boxes with weights, returning list of dicts with keys: box (x,y,w,h), weight (float or None).
     Boxes are in original image coordinates, sorted by weight (highest first).
     """
-    # Convert RGBA to RGB
-    if pil_image.mode == 'RGBA':
-        white_bg = Image.new('RGB', pil_image.size, (255, 255, 255))
-        white_bg.paste(pil_image, mask=pil_image.split()[3])
-        pil_image = white_bg
-    elif pil_image.mode != 'RGB':
-        pil_image = pil_image.convert('RGB')
+    # Convert to RGB (handles RGBA, palette, CMYK, grayscale)
+    pil_image = pil_image.convert("RGB")
 
     orig_w, orig_h = pil_image.size
 
@@ -30,39 +49,46 @@ def detect_faces(pil_image):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     gray = cv2.equalizeHist(gray)
 
-    # Try default cascade with detectMultiScale3
-    face_cascade = cv2.CascadeClassifier('C:/msys64/ucrt64/share/opencv4/haarcascades/haarcascade_frontalface_default.xml')
-    faces, reject_levels, level_weights = face_cascade.detectMultiScale3(
-        gray, scaleFactor=1.05, minNeighbors=3, minSize=(40, 40), outputRejectLevels=True
-    )
+    # Ensure contiguous 2D uint8 array
+    gray = np.ascontiguousarray(gray, dtype=np.uint8)
 
     candidates = []
 
-    if len(faces) > 0:
-        for i, (x, y, w, h) in enumerate(faces):
-            # Convert back to original coordinates
-            x_orig = int(x / scale)
-            y_orig = int(y / scale)
-            w_orig = int(w / scale)
-            h_orig = int(h / scale)
-            candidates.append({'box': (x_orig, y_orig, w_orig, h_orig), 'weight': float(level_weights[i])})
+    try:
+        # Try default cascade with detectMultiScale3
+        face_cascade = _load_cascade('haarcascade_frontalface_default.xml')
+        faces, reject_levels, level_weights = face_cascade.detectMultiScale3(
+            gray, scaleFactor=1.05, minNeighbors=3, minSize=(40, 40), outputRejectLevels=True
+        )
 
-        # Sort by weight, highest first
-        candidates.sort(key=lambda c: c['weight'], reverse=True)
-    else:
-        # Fallback: alt2 with higher minNeighbors
-        face_cascade_alt = cv2.CascadeClassifier('C:/msys64/ucrt64/share/opencv4/haarcascades/haarcascade_frontalface_alt2.xml')
-        faces_alt = face_cascade_alt.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=6, minSize=(40, 40))
+        if len(faces) > 0:
+            for i, (x, y, w, h) in enumerate(faces):
+                # Convert back to original coordinates
+                x_orig = int(x / scale)
+                y_orig = int(y / scale)
+                w_orig = int(w / scale)
+                h_orig = int(h / scale)
+                candidates.append({'box': (x_orig, y_orig, w_orig, h_orig), 'weight': float(level_weights[i])})
 
-        if len(faces_alt) > 0:
-            # Return largest box with weight=None
-            largest = max(faces_alt, key=lambda rect: rect[2] * rect[3])
-            x, y, w, h = largest
-            x_orig = int(x / scale)
-            y_orig = int(y / scale)
-            w_orig = int(w / scale)
-            h_orig = int(h / scale)
-            candidates.append({'box': (x_orig, y_orig, w_orig, h_orig), 'weight': None})
+            # Sort by weight, highest first
+            candidates.sort(key=lambda c: c['weight'], reverse=True)
+        else:
+            # Fallback: alt2 with higher minNeighbors
+            face_cascade_alt = _load_cascade('haarcascade_frontalface_alt2.xml')
+            faces_alt = face_cascade_alt.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=6, minSize=(40, 40))
+
+            if len(faces_alt) > 0:
+                # Return largest box with weight=None
+                largest = max(faces_alt, key=lambda rect: rect[2] * rect[3])
+                x, y, w, h = largest
+                x_orig = int(x / scale)
+                y_orig = int(y / scale)
+                w_orig = int(w / scale)
+                h_orig = int(h / scale)
+                candidates.append({'box': (x_orig, y_orig, w_orig, h_orig), 'weight': None})
+    except cv2.error:
+        # Return empty list on detection error
+        return []
 
     return candidates
 
